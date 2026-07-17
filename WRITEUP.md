@@ -1,57 +1,43 @@
-# Research Scout — Kaggle Writeup (Code Track)
+<!-- Kaggle writeup — paste everything below this comment block into the Kaggle
+     Writeup editor (~640 words, limit 1000). Attach:
+     - Agent URL: https://app.joinsitrep.com/dashboard/marketplace/research-scout--fcac5670-ce8b-4154-ae67-e35cba24ff8f
+     - Repo: https://github.com/ns-0437/research-scout
+     - Media: screenshots + demo video -->
 
-> Draft for the "Build the Future of Work with AI Agents" hackathon submission.
-> Word count: ~700 (limit 1000). Paste into the Kaggle Writeup editor and attach:
->
-> - Sitrep agent URL: https://app.joinsitrep.com/dashboard/marketplace/research-scout--fcac5670-ce8b-4154-ae67-e35cba24ff8f
-> - GitHub repo: https://github.com/ns-0437/research-scout
-> - Media gallery screenshots (Studio test result, marketplace listing, a real briefing)
-
----
+# Research Scout — sourced research briefings from your meetings
 
 ## Inspiration
 
-Every meeting produces the same invisible homework: "someone should check what Otter charges now," "is that claim about per-seat pricing actually true?", "look into Paddle vs Stripe before we commit." These loose ends are small enough that nobody schedules time for them and important enough that decisions quietly get made on stale or wrong information. Sitrep already turns meetings into tasks — we wanted the *research* tasks to arrive already done.
+Every meeting I've been part of ends the same way: someone says "we should look into that" and nobody ever does. A competitor gets mentioned, a number gets quoted that nobody checks, somebody suggests a tool and the tab gets closed by Friday. SitRep already turns meetings into tasks, so the gap felt obvious — the research tasks it creates were still waiting on a human. I wanted them to arrive already done.
 
 ## What it does
 
-**Research Scout** is a Remote (code-track) agent for the Sitrep marketplace. When Sitrep assigns it a post-meeting task, it:
+Research Scout is a Remote agent (Code Track). When SitRep hands it a research task, it reads the meeting summary and pulls out what's worth chasing: open questions, competitors that got name-dropped, tools under consideration, claims nobody could confirm. It researches each one on the live web, in parallel, and returns a single briefing: an executive summary you can read in thirty seconds, next steps with suggested owners taken from the attendee list, and one section per item with the answer, the evidence, and links to sources.
 
-1. **Mines the meeting** for research-worthy items — open questions, competitors that got name-dropped, tools/vendors under consideration, claims that went unchallenged, and missing market context.
-2. **Runs live web research on each item in parallel**, grounding every finding in real, current sources.
-3. **Delivers one briefing document**: an executive summary a stakeholder can read in 30 seconds, recommended next steps with suggested owners drawn from the meeting's attendee list, and a sourced section per item with links you can click to verify.
+The part I care most about is that it doesn't bluff. If sources disagree, it says so. If it can't verify something, it flags it instead of guessing. In SitRep's own Studio test, the auto-generated meeting never actually named the competitor — and the agent responded that the research couldn't be done as scoped, rather than inventing pricing for a company that doesn't exist. That test passed, and it's honestly my favorite output so far.
 
-The agent is deliberately honest: when sources conflict, it says so; when something couldn't be verified, it flags it instead of guessing; when one research item fails or times out, that section degrades to a suggested search query rather than sinking the whole briefing.
+## How I built it
 
-## How we built it
+It's a FastAPI service on the SitRep starter kit; the HTTP wrapper and HMAC signature check are stock. The pipeline is three stages on Claude (Anthropic API):
 
-The agent is a FastAPI service built on the Sitrep Agent Starter Kit — the HTTP wrapper and HMAC signature verification are unchanged; all the logic lives in a custom handler implementing a three-stage pipeline on the Anthropic API (Claude Opus 4.8):
+1. **Extract** — one structured-output call (JSON schema) turns the meeting into a ranked list of research items, each with a category, why it matters, and a concrete question. Schema constraints mean it never breaks on malformed output.
+2. **Research** — one call per item, fanned out with asyncio, each using Claude's server-side web search. Launches are staggered to stay under rate limits, paused turns get resumed, and every item runs on its own timeout.
+3. **Brief** — a final call writes the exec summary and next steps, and plain Python stitches the document together.
 
-- **Extract** — a single structured-output call (JSON-schema-constrained) pulls the top research items out of the meeting summary, each with a category, a "why it matters" grounded in the meeting, and a concrete research question. Schema constraints mean the pipeline can never break on malformed model output.
-- **Research** — one call per item, fanned out concurrently with `asyncio.gather`, each armed with Claude's server-side `web_search` tool. Launches are staggered to stay under search rate limits, `pause_turn` responses are resumed automatically, and each item runs under its own wall-clock budget.
-- **Brief** — a final call composes the executive summary and next steps from the finished sections; the handler assembles everything into a single markdown artifact for Sitrep to display.
+Deployment is a Render free-tier blueprint (Dockerfile included). Studio "Test" requests hit a quick mode — 2 items, 1 search each, about 30 seconds — so the test button doesn't time out, while real tasks get full depth.
 
-Deployment is a one-click Render blueprint; the repo also ships a Dockerfile for any container host.
+## Challenges I ran into
 
-## Challenges we ran into
+Parallel research kept tripping web-search rate limits, and two of four sections would time out. Staggered launches plus failure isolation fixed it: a dead item now degrades to a suggested search query instead of sinking the whole briefing. Early on, each researcher could also see the whole meeting and would burn its search budget answering everyone else's questions — the fix was embarrassingly simple: tell it the other topics are being handled separately. And web text is messy; a stray lone surrogate character from a scraped page once broke a downstream JSON consumer, so there's a sanitizer now.
 
-- **Parallelism vs. rate limits.** Four concurrent research calls each doing web searches tripped search rate limits and produced timeouts. Staggered launches and per-item timeouts with graceful degradation fixed it — a failed item now costs one section, not the briefing.
-- **Scope creep inside the model.** Early versions of the research prompt let each researcher see the full meeting context, and it would spend its search budget answering *everyone's* questions. The fix was explicit: "other topics are being researched separately — spend your searches only on your question."
-- **Real-world text is messy.** Web sources occasionally emit lone Unicode surrogates that crash downstream JSON consumers; the handler now sanitizes output before returning it.
+## Accomplishments I'm proud of
 
-## Accomplishments we're proud of
+My test briefing on a mock pricing meeting caught something real: Otter.ai quietly cut its Pro plan from 6,000 to 1,200 transcription minutes without changing the price — sourced, with a caveat that review blogs disagreed on one figure and it should be confirmed on the official page. That's the bar I wanted: output you could take into your next meeting. I'm also glad the unglamorous parts made it in before the deadline: signature verification, per-item timeouts, refusal handling, honest uncertainty.
 
-- A genuinely useful output: our test briefing on a SaaS pricing meeting correctly surfaced a competitor's stealth pricing change, debunked-and-nuanced a teammate's claim, and laid out a merchant-of-record decision with real trade-offs — all sourced.
-- Production-grade behavior in a hackathon timeframe: signature verification, failure isolation, timeout budgets, honest uncertainty handling.
-- Something the no-code track structurally can't do: live retrieval with citations, parallel fan-out, and structured extraction.
+## What I learned
 
-## What we learned
-
-Grounding beats eloquence: constraining the model to cite live sources (and to admit what it couldn't verify) changed the output from "plausible" to "usable in a real decision." We also learned that in multi-call pipelines, most quality problems are prompt-boundary problems — telling each stage precisely what is *not* its job mattered as much as telling it what is.
+Grounding beats eloquence — forcing the model to cite live sources and admit what it couldn't verify moved the output from "sounds right" to "usable in a decision". And in multi-call pipelines, most quality bugs were prompt-boundary bugs: telling each stage what is *not* its job mattered as much as telling it what is.
 
 ## What's next
 
-- **Deliver where teams live**: push briefings to Slack/Notion via Sitrep integrations.
-- **Recurring watchlists**: competitors mentioned in past meetings get monitored, and changes surface in the next briefing.
-- **Depth control**: let installers choose quick (1 search/item) vs. deep (multi-source) research per task type.
-- **Internal context**: blend web research with the team's own prior meeting history for "we already discussed this in March" callouts.
+Briefings delivered into Slack and Notion through SitRep's integrations, watchlists for competitors that keep showing up across meetings, a quick-vs-deep research setting per task type, and blending in the team's own meeting history so it can say "you already discussed this in March."
