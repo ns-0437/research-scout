@@ -170,7 +170,8 @@ def _collect_text_and_sources(content) -> tuple[str, list[tuple[str, str]]]:
     return "".join(parts), sources
 
 
-async def research_item(item: dict, summary: str, ctx: Ctx) -> str:
+async def research_item(item: dict, summary: str, ctx: Ctx,
+                        max_searches: int = SEARCHES_PER_ITEM) -> str:
     """Stage 2: live web research on a single item. Returns a markdown section."""
     label = CATEGORY_LABELS.get(item["category"], "Research item")
     heading = f"## {item['topic']}\n\n*{label}* — {item['why_it_matters']}\n"
@@ -197,7 +198,7 @@ async def research_item(item: dict, summary: str, ctx: Ctx) -> str:
                     {
                         "type": "web_search_20260209",
                         "name": "web_search",
-                        "max_uses": SEARCHES_PER_ITEM,
+                        "max_uses": max_searches,
                     }
                 ],
                 system=RESEARCH_SYSTEM,
@@ -254,8 +255,13 @@ async def handler(input: AgentInput, ctx: Ctx) -> dict:
     title = task.get("title") or "Post-meeting research"
     task_text = title + (f"\n{task['description']}" if task.get("description") else "")
 
-    ctx.log(f"extracting research items (model={MODEL})")
-    items = await extract_items(task_text, input.summary, ctx)
+    # Studio "Test" runs have a short timeout — trade depth for speed there.
+    quick = input.agent.get("_route") == "test"
+    max_items = 2 if quick else MAX_ITEMS
+    max_searches = 1 if quick else SEARCHES_PER_ITEM
+
+    ctx.log(f"extracting research items (model={MODEL}{', quick test mode' if quick else ''})")
+    items = (await extract_items(task_text, input.summary, ctx))[:max_items]
 
     if not items:
         return {
@@ -282,7 +288,8 @@ async def handler(input: AgentInput, ctx: Ctx) -> dict:
         await asyncio.sleep(delay)
         try:
             return await asyncio.wait_for(
-                research_item(item, input.summary, ctx), timeout=ITEM_TIMEOUT_SECONDS
+                research_item(item, input.summary, ctx, max_searches),
+                timeout=90 if quick else ITEM_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
             ctx.log(f"research timed out for {item['topic']}")

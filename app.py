@@ -36,7 +36,7 @@ async def health():
     return {"ok": True}
 
 
-async def _handle(request: Request) -> Response | dict:
+async def _handle(request: Request, is_test: bool = False) -> Response | dict:
     body = await request.body()
     if not verify_signature(
         request.headers.get("X-SitRep-Timestamp"),
@@ -50,6 +50,9 @@ async def _handle(request: Request) -> Response | dict:
 
     payload = json.loads(body or b"{}")
     agent_input = AgentInput.from_payload(payload)
+    if is_test:
+        # Studio "Test" runs have a short timeout — let the handler pick a quick mode.
+        agent_input.agent["_route"] = "test"
     # A remote agent runs on ITS OWN LLM (your MODEL env) — not whatever model
     # name SitRep happens to send (that may be a cloud name your Ollama lacks).
     # `agent_input.agent.get("model")` is still available if you want to honor it.
@@ -70,4 +73,4 @@ async def run(request: Request):
 
 @app.post("/test")
 async def test(request: Request):
-    return await _handle(request)
+    return await _handle(request, is_test=True)
