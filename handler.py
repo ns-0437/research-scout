@@ -1,0 +1,311 @@
+"""Research Scout — a post-meeting research agent for the SitRep marketplace.
+
+Every meeting leaves behind loose ends nobody has time to chase: open
+questions, competitors that got name-dropped, tools someone suggested,
+claims that went unchallenged. Research Scout picks up the task, mines the
+meeting for those research-worthy items, runs live web research on each one
+in parallel, and returns a single sourced briefing document.
+
+Pipeline (three stages, all on the Anthropic API):
+
+  1. EXTRACT  — one structured-output call pulls the highest-value research
+                items out of the meeting summary (topic, category, why it
+                matters, and a concrete research question).
+  2. RESEARCH — one call per item, run concurrently, each armed with
+                Claude's server-side web_search tool. Findings come back
+                grounded in live sources with inline links.
+  3. BRIEF    — a final call writes the executive summary and recommended
+                next steps; the code assembles everything into one
+                markdown artifact for SitRep to display.
+
+Configuration (env):
+  ANTHROPIC_API_KEY    required — your Anthropic API key.
+  CLAUDE_MODEL         default "claude-opus-4-8".
+  MAX_RESEARCH_ITEMS   default 4 — cap on parallel research items.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+
+from anthropic import AsyncAnthropic
+
+from sitrep_agent.sdk import AgentInput, Ctx
+
+MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
+MAX_ITEMS = int(os.getenv("MAX_RESEARCH_ITEMS", "4"))
+SEARCHES_PER_ITEM = int(os.getenv("SEARCHES_PER_ITEM", "3"))
+ITEM_TIMEOUT_SECONDS = float(os.getenv("ITEM_TIMEOUT_SECONDS", "210"))
+ITEM_STAGGER_SECONDS = float(os.getenv("ITEM_STAGGER_SECONDS", "2.5"))
+
+client = AsyncAnthropic()  # reads ANTHROPIC_API_KEY from the environment
+
+CATEGORY_LABELS = {
+    "open_question": "Open question",
+    "competitor": "Competitor",
+    "tool_or_vendor": "Tool / vendor",
+    "claim_to_verify": "Claim to verify",
+    "market_context": "Market context",
+}
+
+EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "Short name for the research item, e.g. a company, tool, or question",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": list(CATEGORY_LABELS),
+                    },
+                    "why_it_matters": {
+                        "type": "string",
+                        "description": "One sentence on why the team needs this answered, grounded in the meeting",
+                    },
+                    "research_question": {
+                        "type": "string",
+                        "description": "The concrete question live web research should answer",
+                    },
+                },
+                "required": ["topic", "category", "why_it_matters", "research_question"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["items"],
+    "additionalProperties": False,
+}
+
+EXTRACTION_SYSTEM = f"""You mine meeting summaries for research-worthy items: unanswered questions, \
+competitors or companies mentioned, tools/vendors under consideration, factual claims that should be \
+verified, and market context the team is missing. Select only items where live web research would \
+genuinely help the team — skip anything the meeting already resolved or that is internal to the company \
+(you cannot research their private data). Return at most {MAX_ITEMS} items, ordered by business value. \
+If the meeting contains nothing worth researching, return an empty list."""
+
+RESEARCH_SYSTEM = """You are a sharp business research analyst. Answer ONE research question using web \
+search, grounding every substantive statement in what you find. The meeting context may mention other \
+topics — those are being researched separately in parallel; spend your searches and your answer ONLY on \
+the question you were given. Write 2-4 tight paragraphs (or a short list where that reads better): lead \
+with the direct answer, then the key evidence, then anything the team should watch out for. Cite \
+sources as inline markdown links on the phrases they support. If sources conflict or you cannot verify \
+something, say so plainly rather than guessing. Formatting: no headings of any kind and no preamble or \
+meta-commentary about your process — your text is inserted under a prepared heading, so start directly \
+with the substance."""
+
+BRIEF_SYSTEM = """You write the opening of a post-meeting research briefing. Given the meeting context \
+and the completed research sections, write:
+
+1. An **Executive summary** — 3-5 sentences a busy stakeholder can read instead of the whole document. \
+Lead with the most decision-relevant finding.
+2. **Recommended next steps** — 3-5 short bullets, each a concrete action grounded in the research. \
+Where the meeting attendees are known, suggest who is the natural owner.
+
+Return only these two sections in markdown, with exactly those two headings at the ## level. No preamble."""
+
+
+async def extract_items(task_text: str, summary: str, ctx: Ctx) -> list[dict]:
+    """Stage 1: pull research-worthy items out of the meeting."""
+    response = await client.messages.create(
+        model=MODEL,
+        max_tokens=2048,
+        output_config={
+            "effort": "low",
+            "format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA},
+        },
+        system=EXTRACTION_SYSTEM,
+        messages=[
+            {
+                "role": "user",
+                "content": f"Task assigned to you:\n{task_text}\n\nMeeting summary:\n{summary}",
+            }
+        ],
+    )
+    text = next((b.text for b in response.content if b.type == "text"), "{}")
+    items = json.loads(text).get("items", [])
+    return items[:MAX_ITEMS]
+
+
+def _clean(text: str) -> str:
+    """Strip lone surrogates and other unencodable characters from model/web text."""
+    return text.encode("utf-8", errors="replace").decode("utf-8")
+
+
+def _collect_text_and_sources(content) -> tuple[str, list[tuple[str, str]]]:
+    """Concatenate text blocks and gather any (title, url) citations.
+
+    Text emitted before the final search result is the model narrating its
+    search plan, not the answer — keep only what comes after it.
+    """
+    blocks = list(content)
+    last_tool_idx = max(
+        (i for i, b in enumerate(blocks) if b.type in ("server_tool_use", "web_search_tool_result")),
+        default=-1,
+    )
+    parts: list[str] = []
+    sources: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for block in blocks[last_tool_idx + 1:]:
+        if block.type == "text":
+            parts.append(block.text)
+            for citation in getattr(block, "citations", None) or []:
+                url = getattr(citation, "url", None)
+                if url and url not in seen:
+                    seen.add(url)
+                    sources.append((getattr(citation, "title", None) or url, url))
+    return "".join(parts), sources
+
+
+async def research_item(item: dict, summary: str, ctx: Ctx) -> str:
+    """Stage 2: live web research on a single item. Returns a markdown section."""
+    label = CATEGORY_LABELS.get(item["category"], "Research item")
+    heading = f"## {item['topic']}\n\n*{label}* — {item['why_it_matters']}\n"
+
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                f"Research question: {item['research_question']}\n\n"
+                f"Meeting context (for relevance, not as a source):\n{summary}"
+            ),
+        }
+    ]
+
+    try:
+        while True:
+            response = await client.messages.create(
+                model=MODEL,
+                max_tokens=6000,
+                thinking={"type": "adaptive"},
+                output_config={"effort": "medium"},
+                tools=[
+                    {
+                        "type": "web_search_20260209",
+                        "name": "web_search",
+                        "max_uses": SEARCHES_PER_ITEM,
+                    }
+                ],
+                system=RESEARCH_SYSTEM,
+                messages=messages,
+            )
+            if response.stop_reason == "pause_turn":
+                # Server-side search loop paused mid-turn; resume where it left off.
+                messages = messages[:1] + [{"role": "assistant", "content": response.content}]
+                continue
+            break
+
+        if response.stop_reason == "refusal":
+            return heading + "\n_Research on this item was declined by the model's safety system._\n"
+
+        body, sources = _collect_text_and_sources(response.content)
+        section = heading + "\n" + body.strip() + "\n"
+        if sources:
+            section += "\n**Sources**\n" + "\n".join(f"- [{t}]({u})" for t, u in sources) + "\n"
+        ctx.log(f"researched: {item['topic']}")
+        return section
+    except Exception as exc:  # one failed item must not sink the briefing
+        ctx.log(f"research failed for {item['topic']}: {exc}")
+        return heading + (
+            f"\n_Automated research on this item did not complete ({type(exc).__name__}). "
+            f"Suggested starting point: search for “{item['research_question']}”._\n"
+        )
+
+
+async def write_brief(task_text: str, summary: str, attendees: list[dict],
+                      sections: list[str]) -> str:
+    """Stage 3: executive summary + next steps from the finished research."""
+    names = ", ".join(a.get("name", "") for a in attendees if a.get("name")) or "(not provided)"
+    response = await client.messages.create(
+        model=MODEL,
+        max_tokens=2048,
+        output_config={"effort": "low"},
+        system=BRIEF_SYSTEM,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Task: {task_text}\n\nMeeting summary:\n{summary}\n\n"
+                    f"Attendees: {names}\n\nCompleted research sections:\n\n"
+                    + "\n\n---\n\n".join(sections)
+                ),
+            }
+        ],
+    )
+    return next((b.text for b in response.content if b.type == "text"), "").strip()
+
+
+async def handler(input: AgentInput, ctx: Ctx) -> dict:
+    task = input.task
+    title = task.get("title") or "Post-meeting research"
+    task_text = title + (f"\n{task['description']}" if task.get("description") else "")
+
+    ctx.log(f"extracting research items (model={MODEL})")
+    items = await extract_items(task_text, input.summary, ctx)
+
+    if not items:
+        return {
+            "artifacts": [
+                {
+                    "type": "markdown",
+                    "title": f"Research briefing — {title}",
+                    "content": (
+                        "## Nothing to research\n\nThis meeting didn't surface open questions, "
+                        "competitors, tools, or claims that live web research would help with. "
+                        "If you expected research, add more detail to the task description and re-run."
+                    ),
+                }
+            ]
+        }
+
+    ctx.log(
+        f"researching {len(items)} item(s) in parallel: "
+        + ", ".join(i["topic"] for i in items)
+    )
+
+    async def guarded(item: dict, delay: float) -> str:
+        # Stagger launches so the parallel burst doesn't trip web-search rate limits.
+        await asyncio.sleep(delay)
+        try:
+            return await asyncio.wait_for(
+                research_item(item, input.summary, ctx), timeout=ITEM_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            ctx.log(f"research timed out for {item['topic']}")
+            return (
+                f"## {item['topic']}\n\n_Research timed out. Suggested starting point: "
+                f"search for “{item['research_question']}”._\n"
+            )
+
+    sections = await asyncio.gather(
+        *(guarded(item, i * ITEM_STAGGER_SECONDS) for i, item in enumerate(items))
+    )
+
+    ctx.log("writing executive summary")
+    try:
+        brief = await write_brief(task_text, input.summary, input.attendees, list(sections))
+    except Exception as exc:
+        ctx.log(f"brief generation failed: {exc}")
+        brief = ""
+
+    document = f"# Research briefing — {title}\n\n"
+    if brief:
+        document += brief + "\n\n---\n\n"
+    document += "\n\n".join(sections)
+    document += (
+        "\n\n---\n\n_Compiled by Research Scout from live web sources. "
+        "Verify time-sensitive figures before acting on them._"
+    )
+    document = _clean(document)
+
+    return {
+        "artifacts": [
+            {"type": "markdown", "title": f"Research briefing — {title}", "content": document}
+        ]
+    }

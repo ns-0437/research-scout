@@ -1,0 +1,19 @@
+# One-click deploy to Render's free tier. Push this repo to GitHub, then
+# "New > Blueprint" on render.com and point it here. Set ANTHROPIC_API_KEY
+# and SITREP_AGENT_SECRET in the Render dashboard.
+services:
+  - type: web
+    name: research-scout
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SITREP_AGENT_SECRET
+        sync: false
+      - key: CLAUDE_MODEL
+        value: claude-opus-4-8
+      - key: MAX_RESEARCH_ITEMS
+        value: "4"

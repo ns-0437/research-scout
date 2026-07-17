@@ -1,0 +1,11 @@
+{
+  "name": "Research Scout",
+  "tagline": "Turns your meeting's open questions, competitors, and unverified claims into a sourced research briefing.",
+  "description": "Every meeting leaves loose ends nobody has time to chase: open questions, competitors that got name-dropped, tools someone suggested evaluating, claims that went unchallenged. Research Scout mines the meeting for the highest-value research items, runs live web research on each one in parallel, and delivers a single briefing document — an executive summary, recommended next steps with suggested owners, and a sourced section per item with links you can click to verify. Install it and every research task that comes out of a meeting arrives pre-answered.",
+  "icon": "🔎",
+  "color": "blue",
+  "category": "productivity",
+  "taskTypes": ["research", "doc"],
+  "requiredIntegrations": [],
+  "pricing": { "model": "free", "label": "Free" }
+}
