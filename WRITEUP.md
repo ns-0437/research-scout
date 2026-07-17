@@ -2,7 +2,10 @@
 
 > Draft for the "Build the Future of Work with AI Agents" hackathon submission.
 > Word count: ~700 (limit 1000). Paste into the Kaggle Writeup editor and attach:
-> Sitrep agent URL, this GitHub repo, and the media gallery screenshots.
+>
+> - Sitrep agent URL: https://app.joinsitrep.com/dashboard/marketplace/research-scout--fcac5670-ce8b-4154-ae67-e35cba24ff8f
+> - GitHub repo: https://github.com/ns-0437/research-scout
+> - Media gallery screenshots (Studio test result, marketplace listing, a real briefing)
 
 ---
 
