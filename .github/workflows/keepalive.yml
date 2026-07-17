@@ -1,0 +1,17 @@
+name: Keep Render instance awake
+
+# Render's free tier spins down after ~15 min of inactivity, and the ~50s cold
+# start makes SitRep's Studio test (and first marketplace runs) time out.
+# Ping the health endpoint on a schedule so the instance stays warm.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping health endpoint
+        run: curl -sS --max-time 90 https://research-scout.onrender.com/health
