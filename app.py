@@ -14,7 +14,21 @@ from fastapi import FastAPI, Request, Response
 from handler import handler
 from sitrep_agent.sdk import MODEL, AgentInput, Ctx, LLM, verify_signature
 
-app = FastAPI(title="SitRep Agent")
+app = FastAPI(title="Research Scout")
+
+
+@app.get("/")
+async def root():
+    return {
+        "agent": "Research Scout",
+        "tagline": "Turns your meeting's open questions, competitors, and unverified claims "
+                   "into a sourced research briefing.",
+        "marketplace": "SitRep (https://joinsitrep.com)",
+        "source": "https://github.com/ns-0437/research-scout",
+        "endpoints": {"GET /health": "liveness check",
+                      "POST /run": "SitRep task webhook (HMAC-verified)",
+                      "POST /test": "SitRep Studio test button (HMAC-verified)"},
+    }
 
 
 @app.get("/health")
