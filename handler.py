@@ -111,6 +111,12 @@ Where the meeting attendees are known, suggest who is the natural owner.
 Return only these two sections in markdown, with exactly those two headings at the ## level. No preamble."""
 
 
+def _guidance_block(ctx: Ctx) -> str:
+    """Installer guidance from the SitRep Studio (agent.instructions), if any."""
+    guidance = (ctx.instructions or "").strip()
+    return f"\n\nGuidance from the agent's installer (honor it):\n{guidance}" if guidance else ""
+
+
 async def extract_items(task_text: str, summary: str, ctx: Ctx) -> list[dict]:
     """Stage 1: pull research-worthy items out of the meeting."""
     response = await client.messages.create(
@@ -124,7 +130,8 @@ async def extract_items(task_text: str, summary: str, ctx: Ctx) -> list[dict]:
         messages=[
             {
                 "role": "user",
-                "content": f"Task assigned to you:\n{task_text}\n\nMeeting summary:\n{summary}",
+                "content": f"Task assigned to you:\n{task_text}\n\nMeeting summary:\n{summary}"
+                           + _guidance_block(ctx),
             }
         ],
     )
@@ -174,6 +181,7 @@ async def research_item(item: dict, summary: str, ctx: Ctx) -> str:
             "content": (
                 f"Research question: {item['research_question']}\n\n"
                 f"Meeting context (for relevance, not as a source):\n{summary}"
+                + _guidance_block(ctx)
             ),
         }
     ]
