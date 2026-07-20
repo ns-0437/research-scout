@@ -251,6 +251,33 @@ async def write_brief(task_text: str, summary: str, attendees: list[dict],
 
 
 async def handler(input: AgentInput, ctx: Ctx) -> dict:
+    """Public entry point. Never raises — any failure degrades to a clear artifact
+    so the SitRep marketplace shows a helpful message instead of a 500."""
+    title = (input.task.get("title") or "Post-meeting research")
+    try:
+        return await _run_pipeline(input, ctx)
+    except Exception as exc:  # noqa: BLE001 — a marketplace agent must not 500
+        ctx.log(f"pipeline error: {type(exc).__name__}: {exc}")
+        detail = str(exc)
+        if "credit balance" in detail.lower() or "billing" in detail.lower():
+            note = ("The agent's language-model account is out of credit, so it couldn't run "
+                    "research this time. The agent owner needs to top up their API balance; "
+                    "please try again afterwards.")
+        else:
+            note = ("Research didn't complete because of a temporary problem reaching the "
+                    "language model. Please try running this task again in a few minutes.")
+        return {
+            "artifacts": [
+                {
+                    "type": "markdown",
+                    "title": f"Research briefing — {title}",
+                    "content": f"## Couldn't complete research\n\n{note}",
+                }
+            ]
+        }
+
+
+async def _run_pipeline(input: AgentInput, ctx: Ctx) -> dict:
     task = input.task
     title = task.get("title") or "Post-meeting research"
     task_text = title + (f"\n{task['description']}" if task.get("description") else "")
