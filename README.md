@@ -11,6 +11,10 @@ parallel, and returns a single sourced briefing document.
 
 ## What it produces
 
+**See a real one:** [`docs/sample-briefing.md`](docs/sample-briefing.md) is an actual
+briefing the live agent produced from a mock SaaS-pricing meeting — sourced, with
+inline links and honest caveats where sources disagreed.
+
 One markdown briefing per task:
 
 - **Executive summary** — 3–5 sentences a stakeholder can read instead of the doc.
