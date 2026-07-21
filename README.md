@@ -55,6 +55,10 @@ Design choices worth noting:
   section to a suggested search query; it never sinks the briefing.
 - **Structured extraction.** Stage 1 uses JSON-schema-constrained output, so the
   pipeline never breaks on malformed model output.
+- **Resiliency fallback.** Claude runs every stage by default. If `GEMINI_API_KEY`
+  is set and a Claude call fails (e.g. a billing hiccup mid-demo), that one stage
+  transparently retries on Gemini instead of degrading the artifact — an
+  operational safety net, not the primary implementation.
 
 ## Run it locally
 
@@ -92,6 +96,8 @@ Set `ANTHROPIC_API_KEY` and `SITREP_AGENT_SECRET` in the dashboard.
 | `SEARCHES_PER_ITEM` | `3` | Web searches allowed per item |
 | `ITEM_TIMEOUT_SECONDS` | `210` | Per-item wall-clock budget |
 | `ITEM_STAGGER_SECONDS` | `2.5` | Delay between parallel launches (rate-limit smoothing) |
+| `GEMINI_API_KEY` | unset | Optional — enables the Gemini fallback on Claude failure |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Model used for the fallback |
 
 ## Repo layout
 
